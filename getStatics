@@ -1,0 +1,87 @@
+local PAGE_NOACCESS          = 0x01
+local PAGE_READONLY          = 0x02
+local PAGE_READWRITE         = 0x04
+local PAGE_WRITECOPY         = 0x08
+local PAGE_EXECUTE           = 0x10
+local PAGE_EXECUTE_READ      = 0x20
+local PAGE_EXECUTE_READWRITE = 0x40
+local PAGE_EXECUTE_WRITECOPY = 0x80
+local PAGE_GUARD             = 0x100
+
+local function hasFlag( value, flag )
+   return ( value & flag ) ~= 0
+end
+
+local function isReadableDataProtect( p )
+   if hasFlag(p, PAGE_GUARD) then return false end
+   return
+      hasFlag( p, PAGE_READONLY ) or
+      hasFlag( p, PAGE_READWRITE ) or
+      hasFlag( p, PAGE_WRITECOPY )
+end
+
+local function isExecutableProtect( p )
+   return
+      hasFlag( p, PAGE_EXECUTE ) or
+      hasFlag( p, PAGE_EXECUTE_READ ) or
+      hasFlag( p, PAGE_EXECUTE_READWRITE ) or
+      hasFlag( p, PAGE_EXECUTE_WRITECOPY )
+end
+local timeStamp  = os.clock()
+local moduleBase = getAddress( process ) + 0x1000
+local moduleSize = getModuleSize( process ) - 0x1000
+local moduleEnd  = moduleBase + moduleSize
+local stream     = createMemoryStream() ; stream.Size = moduleSize
+local counter    = 0
+for _, r in ipairs( enumMemoryRegions() ) do
+    local start = r.BaseAddress
+    local size  = r.RegionSize
+    local stop  = start + size
+    local p     = r.Protect
+    if ( start >= moduleBase ) and ( stop <= moduleEnd ) then
+        if isReadableDataProtect( p ) and not isExecutableProtect( p ) then
+           local bytes = copyMemory( start, size, stream.Memory, 1 )
+           for i = 0, size - 1, 8 do
+               local static     = ( start + i )
+               local ptr = readPointerLocal( bytes + i )
+               if ( ptr and readByte( ptr ) ) then
+                  local objectsMax = readIntegerLocal( bytes + i + 0x10 )
+                  local objects    = readIntegerLocal( bytes + i + 0x14 )
+                  if ( objectsMax > 0 and objects > 0 ) and ( objects <= objectsMax ) then
+                     local chunksMax = readIntegerLocal( bytes + i + 0x18 )
+                     local chunks    = readIntegerLocal( bytes + i + 0x1C )
+                     if ( chunksMax > 0 and chunks > 0 ) and ( chunks <= chunksMax ) then
+                        local chunk     = readPointer( ptr )
+                        local chunkSize = readInteger( chunk - 8 )
+                        if chunkSize and chunkSize == 0x00010000 then
+                           print( string.format( '%016X - GUObjectArray\n', static ) )
+                           registerSymbol( 'GUObjectArray', static, true )
+                           counter = counter + 1
+                        end
+                     end
+                  end
+               else
+                  ptr = readPointerLocal( bytes + i + 8 )
+                  if not ptr or not readByte( ptr ) then
+                     local curBytCursor = readIntegerLocal( bytes + i + 12 )
+                     if ( curBytCursor > 0 and curBytCursor < 0x10000 ) then
+                        ptr = readPointerLocal( bytes + i + 16 )
+                        if ptr and ptr > 0 then
+                           local str = readString( ptr + 2, 3, false )
+                           if str and str == 'None' then
+                              print( string.format( '%016X - FNamePool\n', static ) )
+                              registerSymbol( 'FNamePool', static, true )
+                              counter = counter + 1
+                           end
+                        end
+                     end
+                  end
+               end
+               if counter == 2 then break end
+           end
+        end
+    end
+    if counter == 2 then break end
+end
+stream.destroy()
+print( 'Scan took:', os.clock() - timeStamp )
