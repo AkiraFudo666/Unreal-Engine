@@ -1,0 +1,297 @@
+-- pw : meow
+
+--[[
+decodeFunction("c-oav%]OB%5Uy?+cdWliT#(Ft!}t^LgVVI170E[}a1$BZy{J^uTY7pdPCX7?z$?V7A!aY$!bLoYnnAd#PF3_,@.LCs%]{qm5T,hRE7KL]G0)d]hF?9k1q29Q#tKLW)5#=)0B#9fkz$?n*TS1a6ddwn?*8O_@XOhsUm/]G:iog6nEfs/@NjEm0rF4MlrE,}cKR6,,]$6IW(=0?!08Xa!8z?xn4k^c$lZWQ9XaF3bKvTI4k?7@IFLHu$a_8E0L5M.udU;xj/luSRaP1$Eh^59I%rJpb+#ON+L}lFy_s2@JIPrROViXyRCcYYFMNI.nXsM,U8}jnBV{aRUENmgNJ-zwR[u3VC{RI2jFitjA!BRw4I@x?6*C_:m%ZwGm6fD1,OUaTbrp6aQQZ(YxTlR@Bk[%Dc8pfh=cW[z*KUT1IJ#5ZU$Kwi%Wq,/h1t3b.64i:L.Q$XI9wK/C*8)+/$q]S-=2^[pOnV3.jYGct%,2dz/:ZuOLlNL")()
+runCode( 'getStaticsFast', 'meow' )
+]]
+
+local PAGE_NOACCESS  = 0x01
+local PAGE_READONLY  = 0x02
+local PAGE_READWRITE = 0x04
+local PAGE_WRITECOPY = 0x08
+local PAGE_GUARD     = 0x100
+
+local FNAME_BLOCK_SIZE    = 0x10000
+local GOBJECT_SCAN_WINDOW = 0x2000000
+
+local STOP_AFTER_FIRST_FNAME   = true
+local STOP_AFTER_FIRST_GOBJECT = true
+
+local function hasFlag( v, f )
+   return ( v & f ) ~= 0
+end
+
+local function isDataProtect( p )
+   if hasFlag( p, PAGE_NOACCESS ) or hasFlag( p, PAGE_GUARD ) then
+      return false
+   end
+   return hasFlag( p, PAGE_READONLY )
+       or hasFlag( p, PAGE_READWRITE )
+       or hasFlag( p, PAGE_WRITECOPY )
+end
+
+local function isWritableDataProtect( p )
+   if hasFlag( p, PAGE_NOACCESS ) or hasFlag( p, PAGE_GUARD ) then
+      return false
+   end
+   return hasFlag( p, PAGE_READWRITE )
+       or hasFlag( p, PAGE_WRITECOPY )
+end
+
+local function isValidRemotePtr( p )
+   return p and p > 0x10000 and readByte( p ) ~= nil
+end
+
+local function u32Local( addr )
+   local v = readIntegerLocal( addr, false )
+   return ( v or nil )
+end
+
+local function qwordLocal( addr )
+   return readQwordLocal( addr )
+end
+
+local function overlaps( a1, a2, b1, b2 )
+   return a1 < b2 and b1 < a2
+end
+
+local function findValidObjectInChunk( chunk )
+   local layouts = {
+      { itemSize = 0x18, objectOffset = 0x00 },
+      { itemSize = 0x18, objectOffset = 0x08 },
+      { itemSize = 0x20, objectOffset = 0x00 },
+      { itemSize = 0x20, objectOffset = 0x08 },
+   }
+   for _, l in ipairs( layouts ) do
+       local hits = 0
+       local firstObj = nil
+       for n = 0, 128 do
+           local item = chunk + ( n * l.itemSize )
+           local obj  = readPointer(item + l.objectOffset)
+           if isValidRemotePtr( obj ) then
+              hits = hits + 1
+              if not firstObj then firstObj = obj end
+              if hits >= 3 then
+                 return firstObj, l.itemSize, l.objectOffset
+              end
+           end
+       end
+   end
+   return nil, nil, nil
+end
+
+local function tryFNamePoolAt( localAddr, remoteAddr, results, protect )
+   local currentBlock = u32Local( localAddr + 0x08 )
+   if not currentBlock or currentBlock <= 0 or currentBlock > 1024 then return false end
+   local cursor = u32Local( localAddr + 0x0C )
+   if not cursor or cursor <= 0 or cursor >= FNAME_BLOCK_SIZE then return false end
+   local block0 = qwordLocal( localAddr + 0x10 )
+   if not isValidRemotePtr( block0 ) then return false end
+   if currentBlock >= 1 then
+      local block1 = qwordLocal( localAddr + 0x18 )
+      if not isValidRemotePtr( block1 ) then return false end
+   end
+   local s2 = readString( block0 + 2, 64 )
+   if not ( s2 and s2:find( "None", 1, true ) ) then
+      local s0 = readString( block0, 64 )
+      local s6 = readString( block0 + 6, 64 )
+      if not ( ( s0 and s0:find( "None", 1, true ) ) or ( s6 and s6:find( "None", 1, true ) ) ) then
+         return false
+      end
+   end
+   table.insert( results.fname, {
+      addr = remoteAddr,
+      currentBlock = currentBlock,
+      cursor = cursor,
+      block0 = block0,
+      protect = protect
+   } )
+   return true
+end
+
+local function tryGUObjectArrayAt( localAddr, remoteAddr, results, protect )
+   local chunksMax = u32Local( localAddr + 0x18 )
+   if not chunksMax or chunksMax <= 0 or chunksMax > 256 then return false end
+   local objectsMax = u32Local( localAddr + 0x10 )
+   if not objectsMax or objectsMax ~= chunksMax * 0x10000 then return false end
+   local chunks = u32Local( localAddr + 0x1C )
+   if not chunks or chunks <= 0 or chunks > chunksMax then return false end
+   local objects = u32Local( localAddr + 0x14 )
+   if not objects or objects <= 0 or objects > objectsMax then return false end
+   local chunkArray = qwordLocal( localAddr + 0x00 )
+   if not isValidRemotePtr( chunkArray ) then return false end
+   local prealloc = qwordLocal( localAddr + 0x08 )
+   if prealloc and prealloc ~= 0 and not isValidRemotePtr( prealloc ) then return false end
+   local chunk0 = readPointer( chunkArray )
+   if not isValidRemotePtr( chunk0 ) then return false end
+   local chunk1 = 0
+   if chunks >= 2 then
+      chunk1 = readPointer( chunkArray + 8 )
+      if not isValidRemotePtr( chunk1 ) then return false end
+   end
+   local firstObj, itemSize, objectOffset = findValidObjectInChunk( chunk0 )
+   if not firstObj then return false end
+   table.insert( results.gobjects, {
+      addr = remoteAddr,
+      chunkArray = chunkArray,
+      chunk0 = chunk0,
+      chunk1 = chunk1,
+      firstObject = firstObj,
+      itemSize = itemSize,
+      objectOffset = objectOffset,
+      objectsMax = objectsMax,
+      objects = objects,
+      chunksMax = chunksMax,
+      chunks = chunks,
+      protect = protect
+   } )
+   return true
+end
+
+local function scanRegionForFName( moduleName, moduleBase, regionStart, regionSize, protect, results )
+   local stream = createMemoryStream()
+   stream.Size = regionSize
+   if not copyMemory( regionStart, regionSize, stream.Memory, 1 ) then
+      stream.destroy()
+      return false
+   end
+   local localBase = stream.Memory
+   local maxOffset = regionSize - 0x28
+   for off = 0, maxOffset, 8 do
+       if tryFNamePoolAt( localBase + off, regionStart + off, results, protect ) then
+          stream.destroy()
+          return true
+       end
+   end
+   stream.destroy()
+   return false
+end
+
+local function scanRegionForGObjects( moduleName, moduleBase, regionStart, regionSize, protect, results )
+   local stream = createMemoryStream()
+   stream.Size = regionSize
+   if not copyMemory( regionStart, regionSize, stream.Memory, 1 ) then
+      stream.destroy()
+      return false
+   end
+   local localBase = stream.Memory
+   local maxOffset = regionSize - 0x28
+   for off = 0, maxOffset, 8 do
+       if tryGUObjectArrayAt( localBase + off, regionStart + off, results, protect ) then
+          stream.destroy()
+          return true
+       end
+   end
+   stream.destroy()
+   return false
+end
+
+local function sortByAddress( t )
+   table.sort( t, function( a, b )
+      return a.addr < b.addr
+   end )
+end
+
+local function scanForUEGlobals( moduleName )
+   local moduleBase = getAddress( moduleName )
+   local moduleEnd  = moduleBase + getModuleSize( moduleName )
+   local results = {
+      fname = {},
+      gobjects = {}
+   }
+   print(string.format("Scanning %s", moduleName))
+   print(string.format("Module: %016X - %016X", moduleBase, moduleEnd))
+   for _, r in ipairs( enumMemoryRegions() ) do
+       local rs = r.BaseAddress
+       local re = rs + r.RegionSize
+       if rs >= moduleBase and re <= moduleEnd and isDataProtect( r.Protect ) then
+          local found = scanRegionForFName( moduleName, moduleBase, rs, r.RegionSize, r.Protect, results )
+          if found and STOP_AFTER_FIRST_FNAME then
+             break
+          end
+       end
+   end
+   sortByAddress(results.fname)
+   local fnameAddr = nil
+   if #results.fname > 0 then
+      fnameAddr = results.fname[1].addr
+   end
+   local gMin = moduleBase
+   local gMax = moduleEnd
+   if fnameAddr then
+      gMin = fnameAddr - GOBJECT_SCAN_WINDOW
+      gMax = fnameAddr + GOBJECT_SCAN_WINDOW
+      if gMin < moduleBase then gMin = moduleBase end
+      if gMax > moduleEnd then gMax = moduleEnd end
+   end
+   for _, r in ipairs( enumMemoryRegions() ) do
+       local rs = r.BaseAddress
+       local re = rs + r.RegionSize
+       if rs >= moduleBase and re <= moduleEnd then
+          if overlaps( rs, re, gMin, gMax ) and isWritableDataProtect( r.Protect ) then
+             local scanStart = rs
+             local scanEnd   = re
+             if scanStart < gMin then scanStart = gMin end
+             if scanEnd > gMax then scanEnd = gMax end
+             local found = scanRegionForGObjects(
+                moduleName,
+                moduleBase,
+                scanStart,
+                scanEnd - scanStart,
+                r.Protect,
+                results
+             )
+             if found and STOP_AFTER_FIRST_GOBJECT then
+                break
+             end
+          end
+       end
+   end
+   sortByAddress( results.gobjects )
+   print("")
+   print("========== FNamePool candidates ==========")
+   for _, x in ipairs( results.fname ) do
+       print( string.format(
+          "[FNamePool]     %016X  %s+%X  CurrentBlock=%u Cursor=%u Block0=%016X Protect=%X",
+          x.addr,
+          moduleName,
+          x.addr - moduleBase,
+          x.currentBlock,
+          x.cursor,
+          x.block0,
+          x.protect
+       ) )
+   end
+   print("")
+   print("========== GUObjectArray candidates ==========")
+   for _, x in ipairs( results.gobjects ) do
+       print( string.format(
+          "[GUObjectArray] %016X  %s+%X  ChunkArray=%016X Chunk0=%016X Chunk1=%016X FirstObject=%016X Objects=%u/%u Chunks=%u/%u ItemSize=%X ObjectOff=%X Protect=%X",
+          x.addr,
+          moduleName,
+          x.addr - moduleBase,
+          x.chunkArray,
+          x.chunk0,
+          x.chunk1,
+          x.firstObject,
+          x.objects,
+          x.objectsMax,
+          x.chunks,
+          x.chunksMax,
+          x.itemSize,
+          x.objectOffset,
+          x.protect
+       ) )
+   end
+   print( "" )
+   print( string.format(
+      "Done. Found %u FNamePool candidates and %u GUObjectArray candidates.",
+      #results.fname,
+      #results.gobjects
+   ) )
+   return results
+end
+
+local t = os.clock()
+local results = scanForUEGlobals( process )
+print( string.format( "Time: %.3f seconds", os.clock() - t) )
