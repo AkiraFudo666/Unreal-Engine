@@ -1,0 +1,52 @@
+local function byteTableToAob( bytes )
+   local hex = {}
+   for i = 1, #bytes do hex[i] = string.format( '%02X', bytes[i] ) end
+   return table.concat( hex, ' ' )
+end
+local function isValidStatic( addr )
+   if addr and addr ~= 0 and inModule( addr ) then return true end
+end
+local function isValidAddr( addr )
+   if addr and addr ~= 0 and readByte( addr ) then return true end
+end
+local time = os.clock()
+local results = AOBScan( '?? ?? ?? ?? ?? ?? 00 00 40 00 00 00', '+W', 2, 0 )
+local stream  = createMemoryStream() ; stream.Size  = 0x1500
+for i = 0, results.Count - 1 do
+    local addr = tonumber( results[i], 16 )
+    if not inModule( addr ) then
+       local vtable = readPointer( addr )
+       local objFlg = readInteger( addr + 0x08 )
+       local class  = readPointer( addr + 0x10 )
+       local fname  = readPointer( addr + 0x18 )
+       local outer  = readPointer( addr + 0x20 )
+       if isValidStatic( vtable ) and isValidAddr( class ) and isValidAddr( outer ) and not isValidAddr( fname ) and objFlg == 64 and readQword( outer + 0x20 ) == 0 then
+          local size = readInteger( class + 0x58 )
+          if size > 0xD00 and size < 0x1500 then
+             local bytes = copyMemory( addr, size , stream.Memory, 1 )
+             local count = 0
+             for i = 0, stream.Size - 1, 8 do
+                 local ptr = readPointerLocal( bytes + i )
+                 if ptr ~= 0 then
+                    if readPointer( ptr + 0x20 ) == addr then
+                       if count == 0 then registerSymbol( 'Engine:AssetManager', i ) end
+                       if count == 1 then registerSymbol( 'Engine:GameViewport', i ) end
+                       if count == 2 then registerSymbol( 'Engine:TimecodeProvider', i ) end
+                       if count == 3 then registerSymbol( 'GameEngine:GameInstance', i ) end
+                       count = count + 1
+                    end
+                 end
+             end
+             if count >= 3 then
+                local engine = AOBScanModuleUnique( process, byteTableToAob( qwordToByteTable( addr ) ) )
+                if engine then
+                   printf( 'GameEngine Ptr: %X', engine )
+                   break
+                end
+             end
+          end
+       end
+    end
+end
+stream.destroy()
+print( 'Scan took: ', os.clock() - time, ' Seconds' )
