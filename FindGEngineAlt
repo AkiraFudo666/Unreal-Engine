@@ -1,0 +1,71 @@
+local function ByteTableToAob( bytes )
+   local hex = {}
+   for i = 1, #bytes do hex[i] = string.format( '%02X', bytes[i] ) end
+   return table.concat( hex, ' ' )
+end
+local function IsValidStatic( addr )
+   if addr and addr ~= 0 and InModule( addr ) then return true end
+end
+local function IsValidAddr( addr )
+   if addr and addr ~= 0 and ReadByte( addr ) then return true end
+end
+local time = os.clock()
+local results = AOBScan( '?? ?? ?? ?? ?? ?? 00 00 40 00 00 00', '+W', 2, 0 )
+local stream  = CreateMemoryStream() ; stream.Size  = 0x1500
+for i = 0, results.Count - 1 do
+    local addr = tonumber( results[i], 16 )
+    if not InModule( addr ) then
+       local vtable = ReadPointer( addr )
+       local objFlg = ReadInteger( addr + 0x08 )
+       local class  = ReadPointer( addr + 0x10 )
+       local fname  = ReadPointer( addr + 0x18 )
+       local outer  = ReadPointer( addr + 0x20 )
+       if IsValidStatic( vtable ) and IsValidAddr( class ) and IsValidAddr( outer ) and not IsValidAddr( fname ) and objFlg == 64 and ReadQword( outer + 0x20 ) == 0 then
+          local size = ReadInteger( class + 0x58 )
+          if size > 0xD00 and size < 0x1500 then
+             local bytes = CopyMemory( addr, size , stream.Memory, 1 )
+             local count = 0
+             for i = 0, stream.Size - 8, 8 do
+                 local ptr = ReadPointerLocal( bytes + i )
+                 if ptr ~= 0 then
+                    if ReadPointer( ptr + 0x20 ) == addr then
+                       if count == 0 then RegisterSymbol( 'Engine:AssetManager', i, true ) end
+                       if count == 1 then RegisterSymbol( 'Engine:GameViewport', i, true ) end
+                       if count == 2 then RegisterSymbol( 'Engine:TimecodeProvider', i, true ) end
+                       if count == 3 then RegisterSymbol( 'GameEngine:GameInstance', i, true ) end
+                       count = count + 1
+                    end
+                 end
+             end
+             if count >= 3 then
+                local engine = AOBScanModuleUnique( process, ByteTableToAob( QwordToByteTable( addr ) ) )
+                if engine then
+                   RegisterSymbol( 'GEngine', engine, true )
+                   break
+                end
+             end
+          end
+       end
+    end
+end
+stream.destroy()
+local Address = GetAddressSafe( '[[GEngine]+GameEngine:GameInstance]+28' )
+local Offset  = 0
+while ReadQword( Address ) ~= 0x0000000400000001 do
+      Address = Address + Offset
+      Offset  = Offset + 8
+end
+RegisterSymbol( 'GameInstance:LocalPlayers', Offset + 0x20, true )
+RegisterSymbol( 'Player:PlayerController', 0x30, true )
+local lp    = GetAddressSafe( '[[[[GEngine]+GameEngine:GameInstance]+GameInstance:LocalPlayers]+00]' )
+Address     = GetAddressSafe( '[[[[[GEngine]+GameEngine:GameInstance]+GameInstance:LocalPlayers]+00]+30]+150' )
+Offset      = 0
+while ReadPointer( Address ) ~= lp do
+      Address = Address + Offset
+      Offset  = Offset + 8
+end
+RegisterSymbol( 'PlayerController:AcknowledgedPawn', Offset + 0x150, true )
+
+print( 'Scan took: ', os.clock() - time, ' Seconds' )
+printf( 'GameEngine Ptr: %X', GetAddress( 'GEngine' ) )
+printf( 'AcknowledgedPawn:\n[[[[[[%X]+%X]+%X]+00]+30]+%X]', GetAddress( 'GEngine' ), GetAddress( 'GameEngine:GameInstance' ), GetAddress( 'GameInstance:LocalPlayers' ), GetAddress( 'PlayerController:AcknowledgedPawn' ) )
