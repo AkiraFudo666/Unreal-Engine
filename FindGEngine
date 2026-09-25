@@ -29,10 +29,10 @@ for i = 0, results.Count - 1 do
                  local ptr = readPointerLocal( bytes + i )
                  if ptr ~= 0 then
                     if readPointer( ptr + 0x20 ) == addr then
-                       if count == 0 then registerSymbol( 'Engine:AssetManager', i ) end
-                       if count == 1 then registerSymbol( 'Engine:GameViewport', i ) end
-                       if count == 2 then registerSymbol( 'Engine:TimecodeProvider', i ) end
-                       if count == 3 then registerSymbol( 'GameEngine:GameInstance', i ) end
+                       if count == 0 then registerSymbol( 'Engine:AssetManager', i, true ) end
+                       if count == 1 then registerSymbol( 'Engine:GameViewport', i, true ) end
+                       if count == 2 then registerSymbol( 'Engine:TimecodeProvider', i, true ) end
+                       if count == 3 then registerSymbol( 'GameEngine:GameInstance', i, true ) end
                        count = count + 1
                     end
                  end
@@ -40,6 +40,7 @@ for i = 0, results.Count - 1 do
              if count >= 3 then
                 local engine = AOBScanModuleUnique( process, byteTableToAob( qwordToByteTable( addr ) ) )
                 if engine then
+                   registerSymbol( 'GEngine', engine, true )
                    printf( 'GameEngine Ptr: %X', engine )
                    break
                 end
